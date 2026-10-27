@@ -15,7 +15,14 @@ def test_health_devuelve_ok_y_modelo():
     assert cuerpo["modelo"]
 
 
-def test_chat_rutea_preventa():
+def test_chat_rutea_preventa(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(
+        modulo.graph,
+        "invoke",
+        lambda *args, **kwargs: {"ruta": "preventa", "motivo": "Consulta previa a la compra.", "respuesta": "Preventa."},
+    )
     r = client.post("/chat", json={"user_id": "test-preventa", "texto": "¿tienen la polera azul en talla M?"})
     assert r.status_code == 200
     cuerpo = r.json()
@@ -25,13 +32,27 @@ def test_chat_rutea_preventa():
     assert set(cuerpo) == {"ruta", "motivo", "respuesta"}
 
 
-def test_chat_rutea_postventa():
+def test_chat_rutea_postventa(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(
+        modulo.graph,
+        "invoke",
+        lambda *args, **kwargs: {"ruta": "postventa", "motivo": "Pedido ya realizado.", "respuesta": "Postventa."},
+    )
     r = client.post("/chat", json={"user_id": "test-postventa", "texto": "mi pedido 4521 llegó roto"})
     assert r.status_code == 200
     assert r.json()["ruta"] == "postventa"
 
 
-def test_chat_rutea_generica():
+def test_chat_rutea_generica(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(
+        modulo.graph,
+        "invoke",
+        lambda *args, **kwargs: {"ruta": "generica", "motivo": "Saludo.", "respuesta": "Hola."},
+    )
     r = client.post("/chat", json={"user_id": "test-generica", "texto": "hola"})
     assert r.status_code == 200
     assert r.json()["ruta"] == "generica"
@@ -53,14 +74,88 @@ def test_chat_sin_user_id_devuelve_422():
     assert r.status_code == 422
 
 
-def test_telegram_responde_ok():
-    r = client.post("/telegram", json={"update_id": 1, "message": {"text": "hola"}})
+def test_telegram_rechaza_secreto_invalido(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(modulo, "TELEGRAM_SECRET", "secreto-correcto")
+    r = TestClient(modulo.app).post(
+        "/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "secreto-incorrecto"},
+        json={"update_id": 1},
+    )
+    assert r.status_code == 403
+
+
+def test_telegram_ignora_updates_sin_texto(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(modulo, "TELEGRAM_SECRET", "test-secret")
+
+    def no_deberia_invocarse(*args, **kwargs):
+        raise AssertionError("El router no debe procesar updates sin texto")
+
+    monkeypatch.setattr(modulo, "ejecutar_router", no_deberia_invocarse)
+    r = TestClient(modulo.app).post(
+        "/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+        json={"update_id": 1, "message": {"chat": {"id": 99}, "sticker": {"emoji": "👍"}}},
+    )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
 
-def test_telegram_acepta_cualquier_json():
-    r = client.post("/telegram", json={"cualquier": ["cosa", 1, True]})
+def test_telegram_invoca_router_y_envia_respuesta(monkeypatch):
+    import api.app as modulo
+
+    enviados = []
+
+    def router(texto, thread_id):
+        assert texto == "hola tienda"
+        assert thread_id == "12345"
+        return modulo.ChatResponse(ruta="generica", motivo="Es un saludo.", respuesta="Hola, soy la tienda.")
+
+    async def enviar(chat_id, texto):
+        enviados.append({"chat_id": chat_id, "texto": texto})
+
+    monkeypatch.setattr(modulo, "TELEGRAM_SECRET", "test-secret")
+    monkeypatch.setattr(modulo, "ejecutar_router", router)
+    monkeypatch.setattr(modulo, "enviar_mensaje_telegram", enviar)
+    r = TestClient(modulo.app).post(
+        "/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+        json={"update_id": 1, "message": {"chat": {"id": 12345}, "text": "hola tienda"}},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    assert enviados == [{"chat_id": 12345, "texto": "Hola, soy la tienda."}]
+
+
+def test_telegram_responde_200_si_falla_el_modelo(monkeypatch):
+    import api.app as modulo
+
+    def fallo_modelo(*args, **kwargs):
+        raise RuntimeError("modelo no disponible")
+
+    monkeypatch.setattr(modulo, "TELEGRAM_SECRET", "test-secret")
+    monkeypatch.setattr(modulo, "ejecutar_router", fallo_modelo)
+    r = TestClient(modulo.app, raise_server_exceptions=False).post(
+        "/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+        json={"update_id": 1, "message": {"chat": {"id": 12345}, "text": "hola"}},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+def test_telegram_acepta_cualquier_json_con_secreto_valido(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(modulo, "TELEGRAM_SECRET", "test-secret")
+    r = TestClient(modulo.app).post(
+        "/telegram",
+        headers={"X-Telegram-Bot-Api-Secret-Token": "test-secret"},
+        json={"cualquier": ["cosa", 1, True]},
+    )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
@@ -140,4 +235,3 @@ def test_el_grafo_se_compila_una_sola_vez():
 
     assert grafo_router is not None
     assert grafo_router.checkpointer is not None
-

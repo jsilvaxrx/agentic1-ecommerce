@@ -6,6 +6,8 @@ Levantar en local:
 Swagger completo en http://localhost:8000/docs
 """
 
+import asyncio
+import hmac
 import logging
 import os
 import sys
@@ -14,7 +16,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException, status
+import httpx
+from fastapi import Body, FastAPI, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -27,6 +30,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("api.heroku")
 
 MODELO = os.getenv("MODELO", "gemini-3.5-flash-lite")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_SECRET = os.getenv("TELEGRAM_SECRET", "")
 
 RUTAS_VALIDAS = ("preventa", "postventa", "generica")
 
@@ -147,6 +152,25 @@ def health() -> HealthResponse:
     return HealthResponse(ok=True, modelo=MODELO)
 
 
+def ejecutar_router(texto: str, thread_id: str) -> ChatResponse:
+    resultado = graph.invoke(
+        {"mensaje": texto},
+        config={"configurable": {"thread_id": thread_id}},
+    )
+    if not isinstance(resultado, dict):
+        raise ValueError(f"El grafo devolvió un resultado inesperado: {type(resultado)!r}")
+
+    ruta = resultado.get("ruta")
+    if ruta not in RUTAS_VALIDAS:
+        raise ValueError(f"El grafo devolvió una ruta inválida: {ruta!r}")
+
+    return ChatResponse(
+        ruta=ruta,
+        motivo=str(resultado.get("motivo", "")),
+        respuesta=str(resultado.get("respuesta", "")),
+    )
+
+
 @app.post(
     "/chat",
     tags=["chat"],
@@ -170,10 +194,7 @@ def health() -> HealthResponse:
 )
 def chat(pedido: ChatRequest) -> ChatResponse:
     try:
-        resultado = graph.invoke(
-            {"mensaje": pedido.texto},
-            config={"configurable": {"thread_id": pedido.user_id}},
-        )
+        return ejecutar_router(pedido.texto, pedido.user_id)
     except Exception:
         logger.exception("Fallo el modelo al rutear el mensaje de user_id=%s", pedido.user_id)
         raise HTTPException(
@@ -181,26 +202,19 @@ def chat(pedido: ChatRequest) -> ChatResponse:
             detail="El modelo no respondió correctamente. Inténtalo de nuevo en unos segundos.",
         ) from None
 
-    if not isinstance(resultado, dict):
-        logger.error("El grafo devolvió un resultado inesperado: %r", type(resultado))
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="El modelo no respondió correctamente. Inténtalo de nuevo en unos segundos.",
-        )
 
-    ruta = resultado.get("ruta")
-    if ruta not in RUTAS_VALIDAS:
-        logger.error("El grafo devolvió una ruta inválida: %r", ruta)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="El modelo no respondió correctamente. Inténtalo de nuevo en unos segundos.",
-        )
+async def enviar_mensaje_telegram(chat_id: int | str, texto: str) -> None:
+    if not TELEGRAM_TOKEN:
+        raise RuntimeError("TELEGRAM_TOKEN no está configurado.")
 
-    return ChatResponse(
-        ruta=ruta,
-        motivo=str(resultado.get("motivo", "")),
-        respuesta=str(resultado.get("respuesta", "")),
-    )
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        respuesta = await client.post(url, json={"chat_id": chat_id, "text": texto})
+    respuesta.raise_for_status()
+
+    cuerpo = respuesta.json()
+    if not cuerpo.get("ok"):
+        raise RuntimeError(f"Telegram rechazó sendMessage: {cuerpo!r}")
 
 
 @app.post(
@@ -209,8 +223,32 @@ def chat(pedido: ChatRequest) -> ChatResponse:
     response_model=TelegramResponse,
     include_in_schema=False,
     summary="Webhook entrante de Telegram",
-    description="Recibe las actualizaciones del webhook de Telegram. Se completa en la parte 5.",
+    description="Recibe updates de Telegram, verifica el secreto y responde usando el router.",
 )
-async def telegram(payload: Any = Body(...)) -> TelegramResponse:
-    logger.info("Actualización de Telegram recibida. tipo=%s", type(payload).__name__)
+async def telegram(request: Request, payload: Any = Body(...)) -> TelegramResponse:
+    secreto_recibido = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+    if not TELEGRAM_SECRET or not hmac.compare_digest(secreto_recibido, TELEGRAM_SECRET):
+        logger.warning("Webhook de Telegram rechazado por secreto inválido.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Secreto de Telegram inválido.")
+
+    if not isinstance(payload, dict):
+        return TelegramResponse(ok=True)
+
+    mensaje = payload.get("message")
+    if not isinstance(mensaje, dict):
+        return TelegramResponse(ok=True)
+
+    chat = mensaje.get("chat")
+    chat_id = chat.get("id") if isinstance(chat, dict) else None
+    texto = mensaje.get("text")
+    if chat_id is None or not isinstance(texto, str) or not texto.strip():
+        return TelegramResponse(ok=True)
+
+    try:
+        resultado = await asyncio.to_thread(ejecutar_router, texto, str(chat_id))
+        logger.info("Telegram ruteado. chat_id=%s ruta=%s motivo=%s", chat_id, resultado.ruta, resultado.motivo)
+        await enviar_mensaje_telegram(chat_id, resultado.respuesta)
+    except Exception:
+        logger.exception("No se pudo responder el update de Telegram para chat_id=%s", chat_id)
+
     return TelegramResponse(ok=True)
