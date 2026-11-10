@@ -57,6 +57,29 @@ MODELO=gemini-3.5-flash-lite
 
 Nunca subas `.env` al repositorio: está en `.gitignore`.
 
+## Clave de la API
+
+`POST /chat` exige la cabecera `X-API-Key`; `/health` y el webhook `/telegram` no cambian.
+Genera una clave segura:
+
+```bash
+openssl rand -hex 32
+```
+
+En local, añádela a `.env`:
+
+```bash
+API_KEY=tu_clave_aleatoria
+```
+
+En Heroku, guárdala como Config Var:
+
+```bash
+heroku config:set API_KEY=tu_clave_aleatoria -a tu-app
+```
+
+En Swagger (`/docs`), pulsa **Authorize** e introduce la clave para probar `/chat`.
+
 ## Correr el router en local
 
 ```bash
@@ -105,6 +128,7 @@ Probar con curl:
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: tu_clave_aleatoria" \
   -d '{"user_id": "user-42", "texto": "¿tienen la polera azul en talla M?"}'
 ```
 
@@ -121,6 +145,7 @@ Body inválido (falta `texto`) → `422`:
 ```bash
 curl -X POST http://localhost:8000/chat \
   -H "Content-Type: application/json" \
+  -H "X-API-Key: tu_clave_aleatoria" \
   -d '{"user_id": "user-42"}'
 ```
 
@@ -158,7 +183,8 @@ Telegram, por lo que `pytest` no consume créditos de Gemini ni envía mensajes 
 2. Configurar las variables de entorno (nunca subas el `.env`):
 
    ```bash
-   heroku config:set GOOGLE_API_KEY=tu_clave_aqui
+    heroku config:set GOOGLE_API_KEY=tu_clave_aqui
+    heroku config:set API_KEY=tu_clave_aleatoria
    heroku config:set MODELO=gemini-3.5-flash-lite
    heroku config:set TELEGRAM_TOKEN=tu_token_de_botfather
    heroku config:set TELEGRAM_SECRET=un_secreto_aleatorio_y_largo
@@ -185,6 +211,7 @@ Y `.python-version` fija Python 3.12 para que Heroku use el runtime correcto.
 | Variable | Para qué | Estado |
 |---|---|---|
 | `GOOGLE_API_KEY` | Autenticación con Gemini | requerida |
+| `API_KEY` | Protege `POST /chat` mediante `X-API-Key` | requerida |
 | `MODELO` | Modelo del router | `gemini-3.5-flash-lite` |
 | `TELEGRAM_TOKEN` | Token del bot de Telegram | requerido para responder mensajes |
 | `TELEGRAM_SECRET` | Secreto que Telegram manda en cada webhook | requerido y debe coincidir en Telegram y Heroku |

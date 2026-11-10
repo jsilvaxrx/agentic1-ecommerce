@@ -10,6 +10,7 @@ import asyncio
 import hmac
 import logging
 import os
+import secrets
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,7 +18,8 @@ from typing import Any, Literal
 
 from dotenv import load_dotenv
 import httpx
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, status
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -32,8 +34,10 @@ logger = logging.getLogger("api.heroku")
 MODELO = os.getenv("MODELO", "gemini-3.5-flash-lite")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_SECRET = os.getenv("TELEGRAM_SECRET", "")
+API_KEY = os.getenv("API_KEY", "")
 
 RUTAS_VALIDAS = ("preventa", "postventa", "generica")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 class ChatRequest(BaseModel):
@@ -171,6 +175,14 @@ def ejecutar_router(texto: str, thread_id: str) -> ChatResponse:
     )
 
 
+def verificar_api_key(api_key: str | None = Depends(api_key_header)) -> None:
+    if not API_KEY or not api_key or not secrets.compare_digest(api_key, API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="La cabecera X-API-Key es obligatoria y debe contener una clave válida.",
+        )
+
+
 @app.post(
     "/chat",
     tags=["chat"],
@@ -182,6 +194,7 @@ def ejecutar_router(texto: str, thread_id: str) -> ChatResponse:
     ),
     responses={
         200: {"description": "Mensaje clasificado y respondido por el agente destino.", "model": ChatResponse},
+        401: {"description": "Falta la cabecera `X-API-Key` o su valor no es válido."},
         422: {
             "description": "Body inválido: falta `user_id`, falta `texto` o `texto` viene vacío.",
             "model": ErrorValidacion,
@@ -192,7 +205,7 @@ def ejecutar_router(texto: str, thread_id: str) -> ChatResponse:
         },
     },
 )
-def chat(pedido: ChatRequest) -> ChatResponse:
+def chat(pedido: ChatRequest, _: None = Depends(verificar_api_key)) -> ChatResponse:
     try:
         return ejecutar_router(pedido.texto, pedido.user_id)
     except Exception:

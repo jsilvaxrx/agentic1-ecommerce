@@ -1,10 +1,20 @@
 """Tests de la API FastAPI del router."""
 
 from fastapi.testclient import TestClient
+import pytest
 
 from api.app import app
 
 client = TestClient(app)
+API_KEY_PRUEBA = "clave-de-prueba"
+HEADERS_API_KEY = {"X-API-Key": API_KEY_PRUEBA}
+
+
+@pytest.fixture(autouse=True)
+def configurar_api_key(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(modulo, "API_KEY", API_KEY_PRUEBA)
 
 
 def test_health_devuelve_ok_y_modelo():
@@ -23,7 +33,9 @@ def test_chat_rutea_preventa(monkeypatch):
         "invoke",
         lambda *args, **kwargs: {"ruta": "preventa", "motivo": "Consulta previa a la compra.", "respuesta": "Preventa."},
     )
-    r = client.post("/chat", json={"user_id": "test-preventa", "texto": "¿tienen la polera azul en talla M?"})
+    r = client.post(
+        "/chat", headers=HEADERS_API_KEY, json={"user_id": "test-preventa", "texto": "¿tienen la polera azul en talla M?"}
+    )
     assert r.status_code == 200
     cuerpo = r.json()
     assert cuerpo["ruta"] == "preventa"
@@ -40,7 +52,7 @@ def test_chat_rutea_postventa(monkeypatch):
         "invoke",
         lambda *args, **kwargs: {"ruta": "postventa", "motivo": "Pedido ya realizado.", "respuesta": "Postventa."},
     )
-    r = client.post("/chat", json={"user_id": "test-postventa", "texto": "mi pedido 4521 llegó roto"})
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"user_id": "test-postventa", "texto": "mi pedido 4521 llegó roto"})
     assert r.status_code == 200
     assert r.json()["ruta"] == "postventa"
 
@@ -53,25 +65,43 @@ def test_chat_rutea_generica(monkeypatch):
         "invoke",
         lambda *args, **kwargs: {"ruta": "generica", "motivo": "Saludo.", "respuesta": "Hola."},
     )
-    r = client.post("/chat", json={"user_id": "test-generica", "texto": "hola"})
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"user_id": "test-generica", "texto": "hola"})
     assert r.status_code == 200
     assert r.json()["ruta"] == "generica"
 
 
 def test_chat_sin_texto_devuelve_422():
-    r = client.post("/chat", json={"user_id": "test-422"})
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"user_id": "test-422"})
     assert r.status_code == 422
     assert "detail" in r.json()
 
 
 def test_chat_con_texto_vacio_devuelve_422():
-    r = client.post("/chat", json={"user_id": "test-422", "texto": ""})
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"user_id": "test-422", "texto": ""})
     assert r.status_code == 422
 
 
 def test_chat_sin_user_id_devuelve_422():
-    r = client.post("/chat", json={"texto": "hola"})
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"texto": "hola"})
     assert r.status_code == 422
+
+
+def test_chat_sin_clave_devuelve_401():
+    r = client.post("/chat", json={"user_id": "test-sin-clave", "texto": "hola"})
+    assert r.status_code == 401
+    assert "X-API-Key" in r.json()["detail"]
+
+
+def test_chat_con_clave_devuelve_200(monkeypatch):
+    import api.app as modulo
+
+    monkeypatch.setattr(
+        modulo.graph,
+        "invoke",
+        lambda *args, **kwargs: {"ruta": "generica", "motivo": "Saludo.", "respuesta": "Hola."},
+    )
+    r = client.post("/chat", headers=HEADERS_API_KEY, json={"user_id": "test-con-clave", "texto": "hola"})
+    assert r.status_code == 200
 
 
 def test_telegram_rechaza_secreto_invalido(monkeypatch):
@@ -169,14 +199,14 @@ def test_openapi_tiene_titulo_version_y_tags():
     assert {"salud", "chat", "telegram"} <= tags
 
 
-def test_openapi_documenta_200_422_y_502_en_chat():
+def test_openapi_documenta_200_401_422_y_502_en_chat():
     spec = client.get("/openapi.json").json()
-    respuestas = spec["paths"]["/chat"]["post"]["responses"]
-    assert "200" in respuestas
-    assert "422" in respuestas
-    assert "502" in respuestas
-    for codigo in ("200", "422", "502"):
+    operacion = spec["paths"]["/chat"]["post"]
+    respuestas = operacion["responses"]
+    for codigo in ("200", "401", "422", "502"):
+        assert codigo in respuestas
         assert respuestas[codigo]["description"]
+    assert operacion["security"] == [{"APIKeyHeader": []}]
 
 
 def test_openapi_telegram_no_aparece():
@@ -208,7 +238,7 @@ def test_fallo_del_modelo_devuelve_502_limpio(monkeypatch):
 
     monkeypatch.setattr(modulo.graph, "invoke", boom)
     r = TestClient(modulo.app, raise_server_exceptions=False).post(
-        "/chat", json={"user_id": "test-502", "texto": "hola"}
+        "/chat", headers=HEADERS_API_KEY, json={"user_id": "test-502", "texto": "hola"}
     )
     assert r.status_code == 502
     cuerpo = r.text
@@ -225,7 +255,7 @@ def test_ruta_invalida_devuelve_502(monkeypatch):
         modulo.graph, "invoke", lambda *a, **k: {"ruta": "inventada", "motivo": "x", "respuesta": "y"}
     )
     r = TestClient(modulo.app, raise_server_exceptions=False).post(
-        "/chat", json={"user_id": "test-502b", "texto": "hola"}
+        "/chat", headers=HEADERS_API_KEY, json={"user_id": "test-502b", "texto": "hola"}
     )
     assert r.status_code == 502
 
