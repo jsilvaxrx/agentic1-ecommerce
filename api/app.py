@@ -24,7 +24,9 @@ from pydantic import BaseModel, Field
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.router.graph import graph
+from src.router import graph as router_graph
+
+graph = router_graph.graph
 
 load_dotenv()
 
@@ -81,6 +83,9 @@ class HealthResponse(BaseModel):
 
     ok: bool = Field(..., description="True si la API está viva.", examples=[True])
     modelo: str = Field(..., description="Modelo de Google GenAI que usa el router.", examples=["gemini-3.5-flash-lite"])
+    memoria: Literal["ram", "postgres"] = Field(
+        ..., description="Backend activo para los checkpoints de conversación.", examples=["postgres"]
+    )
 
 
 class DetalleValidacion(BaseModel):
@@ -115,10 +120,16 @@ class TelegramResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """El grafo se compila una sola vez al importar el módulo (arranque de la app)."""
-    logger.info("Router listo. modelo=%s rutas=%s", MODELO, ", ".join(RUTAS_VALIDAS))
-    yield
-    logger.info("API apagada.")
+    """Inicializa y cierra el pool que respalda la memoria del router."""
+    global graph
+    memoria = router_graph.iniciar_memoria()
+    graph = router_graph.graph
+    logger.info("Router listo. modelo=%s rutas=%s memoria=%s", MODELO, ", ".join(RUTAS_VALIDAS), memoria)
+    try:
+        yield
+    finally:
+        router_graph.cerrar_memoria()
+        logger.info("API apagada.")
 
 
 app = FastAPI(
@@ -153,7 +164,7 @@ app = FastAPI(
     responses={200: {"description": "La API está viva.", "model": HealthResponse}},
 )
 def health() -> HealthResponse:
-    return HealthResponse(ok=True, modelo=MODELO)
+    return HealthResponse(ok=True, modelo=MODELO, memoria=router_graph.tipo_memoria)
 
 
 def ejecutar_router(texto: str, thread_id: str) -> ChatResponse:

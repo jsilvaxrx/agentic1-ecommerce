@@ -29,7 +29,8 @@ dist/
 *.sqlite
 *.sqlite3
 *.log
-data/
+data/*
+!data/tienda.md
 datasets/
 *.csv
 *.pkl

@@ -23,6 +23,7 @@ def test_health_devuelve_ok_y_modelo():
     cuerpo = r.json()
     assert cuerpo["ok"] is True
     assert cuerpo["modelo"]
+    assert cuerpo["memoria"] in {"ram", "postgres"}
 
 
 def test_chat_rutea_preventa(monkeypatch):

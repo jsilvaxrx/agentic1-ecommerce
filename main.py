@@ -1,4 +1,4 @@
-"""CLI raíz: python main.py {nombre_agente} "mensaje" [--saltos] [--diagrama]."""
+"""CLI raíz: python main.py {nombre_agente} "mensaje" [--saltos] [--hilo]."""
 
 import argparse
 import importlib
@@ -14,7 +14,7 @@ def cargar_graph(nombre_agente):
     if not hasattr(modulo, "graph"):
         print(f"Error: src/{nombre_agente}/graph.py debe exponer `graph`", file=sys.stderr)
         sys.exit(1)
-    return modulo.graph
+    return modulo
 
 
 def main() -> None:
@@ -24,17 +24,18 @@ def main() -> None:
     parser.add_argument("--saltos", action="store_true", help="Imprime los nodos por los que pasó el grafo")
     parser.add_argument("--diagrama", action="store_true", help="Imprime el Mermaid del grafo sin ejecutarlo")
     parser.add_argument(
+        "--hilo",
         "--thread",
         default="default",
+        dest="thread_id",
         help="thread_id para la memoria del grafo (por defecto 'default')",
     )
     args = parser.parse_args()
 
-    graph = cargar_graph(args.nombre_agente)
-
+    modulo = cargar_graph(args.nombre_agente)
     if args.diagrama:
         try:
-            print(graph.get_graph().draw_mermaid())
+            print(modulo.graph.get_graph().draw_mermaid())
         except Exception as e:
             print(f"Error al generar diagrama: {e}", file=sys.stderr)
             sys.exit(1)
@@ -44,9 +45,17 @@ def main() -> None:
         print('Error: debes pasar un "mensaje". Ej: python main.py mi_agente "hola"', file=sys.stderr)
         sys.exit(1)
 
+    if hasattr(modulo, "iniciar_memoria"):
+        modulo.iniciar_memoria()
+    graph = modulo.graph
+
     # Estado inicial genérico: cada agente define su schema, "mensaje" es la convención mínima.
-    config = {"configurable": {"thread_id": args.thread}}
-    resultado = graph.invoke({"mensaje": args.mensaje}, config=config)
+    config = {"configurable": {"thread_id": args.thread_id}}
+    try:
+        resultado = graph.invoke({"mensaje": args.mensaje}, config=config)
+    finally:
+        if hasattr(modulo, "cerrar_memoria"):
+            modulo.cerrar_memoria()
 
     if args.saltos and isinstance(resultado, dict) and resultado.get("saltos"):
         print(f"Saltos: {' → '.join(resultado['saltos'])}")

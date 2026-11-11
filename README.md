@@ -17,7 +17,7 @@ uno de tres agentes. Hoy los agentes destino son cascarones, pero el enrutado ya
   | `generica` | Saludos o mensajes ajenos al ecommerce (clima, chistes, preguntas generales). |
 
   Si el modelo duda entre `preventa` y `postventa`, la clave es si el cliente **ya compró**.
-- **Recuerda** la conversación por `user_id` (usado como `thread_id` con `MemorySaver`).
+- **Recuerda** la conversación por `user_id` (usado como `thread_id`). Con `DATABASE_URL`, los checkpoints se guardan en Postgres y sobreviven reinicios; sin ella usa RAM como respaldo.
 - **Expone** una API REST con Swagger en `/docs` y una colección de Bruno.
 
 ## Estructura
@@ -105,11 +105,14 @@ Saltos: router → agente_postventa
 Motivo: El cliente reporta un problema con un pedido ya realizado.
 ```
 
-Usa `--thread {id}` para mantener conversaciones separadas (por defecto `default`):
+Usa `--hilo {id}` para mantener conversaciones separadas (por defecto `default`; `--thread` sigue siendo un alias):
 
 ```bash
-python main.py router "quiero comprar una polera azul" --thread cliente-1
-python main.py router "y cuánto cuesta el envío?" --thread cliente-1
+python main.py router "quiero comprar una polera azul" --hilo cliente-1
+python main.py router "y cuánto cuesta el envío?" --hilo cliente-1
+
+# Inspeccionar la memoria persistida en Postgres
+python scripts/ver_memoria.py cliente-1
 ```
 
 ## Levantar la API
@@ -156,7 +159,7 @@ solo en el log del servidor.
 
 | Método | Ruta | Body | Respuesta |
 |---|---|---|---|
-| `GET` | `/health` | – | `{"ok": true, "modelo": MODELO}` |
+| `GET` | `/health` | – | `{"ok": true, "modelo": MODELO, "memoria": "postgres"}` |
 | `POST` | `/chat` | `{"user_id": "...", "texto": "..."}` | `{"ruta", "motivo", "respuesta"}` |
 | `POST` | `/telegram` | Update de Telegram + header de secreto | `{"ok": true}` |
 
@@ -185,6 +188,7 @@ Telegram, por lo que `pytest` no consume créditos de Gemini ni envía mensajes 
    ```bash
     heroku config:set GOOGLE_API_KEY=tu_clave_aqui
     heroku config:set API_KEY=tu_clave_aleatoria
+    heroku config:set DATABASE_URL=postgresql://usuario:contrasena@host:5432/base
    heroku config:set MODELO=gemini-3.5-flash-lite
    heroku config:set TELEGRAM_TOKEN=tu_token_de_botfather
    heroku config:set TELEGRAM_SECRET=un_secreto_aleatorio_y_largo
@@ -213,6 +217,7 @@ Y `.python-version` fija Python 3.12 para que Heroku use el runtime correcto.
 | `GOOGLE_API_KEY` | Autenticación con Gemini | requerida |
 | `API_KEY` | Protege `POST /chat` mediante `X-API-Key` | requerida |
 | `MODELO` | Modelo del router | `gemini-3.5-flash-lite` |
+| `DATABASE_URL` | Postgres para checkpoints persistentes | opcional; sin ella usa RAM |
 | `TELEGRAM_TOKEN` | Token del bot de Telegram | requerido para responder mensajes |
 | `TELEGRAM_SECRET` | Secreto que Telegram manda en cada webhook | requerido y debe coincidir en Telegram y Heroku |
 | `PUBLIC_URL` | URL https pública | vacío hasta Heroku |

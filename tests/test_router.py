@@ -56,19 +56,27 @@ def test_estado_tiene_los_campos_pedidos():
         assert campo in EstadoRouter.__annotations__
 
 
-def test_agentes_cascaron_responden_sin_modelo():
-    from src.router.graph import nodo_agente_postventa, nodo_agente_preventa, nodo_respuesta_generica
+def test_agentes_de_ruta_guardan_mensaje_y_respuesta(monkeypatch):
+    import src.router.graph as modulo
+    from langchain_core.messages import AIMessage, HumanMessage
 
-    preventa = nodo_agente_preventa({"mensaje": "hola"})
-    postventa = nodo_agente_postventa({"mensaje": "hola"})
-    generica = nodo_respuesta_generica({"mensaje": "hola"})
+    class AgenteFalso:
+        def invoke(self, entrada):
+            assert entrada["messages"][-1].content == "hola"
+            return {"messages": [AIMessage(content="Preventa.")]}
 
-    assert "agente de preventa" in preventa["respuesta"]
-    assert "hola" in preventa["respuesta"]
+    monkeypatch.setattr(modulo, "create_agent", lambda **_: AgenteFalso())
+
+    preventa = modulo.nodo_agente_preventa(
+        {"mensaje": "hola", "motivo": "Consulta previa.", "messages": [HumanMessage(content="hola"), AIMessage(content="Consulta previa.")]}
+    )
+    postventa = modulo.nodo_agente_postventa({"mensaje": "hola"})
+
+    assert preventa["respuesta"] == "Preventa."
+    assert preventa["messages"][0].content == "hola"
     assert "agente de postventa" in postventa["respuesta"]
     assert "hola" in postventa["respuesta"]
-    assert "tienda" in generica["respuesta"]
-    assert generica["saltos"] == ["respuesta_generica"]
+    assert postventa["messages"][0].content == "hola"
 
 
 def test_saltos_se_reinician_en_cada_turno():
